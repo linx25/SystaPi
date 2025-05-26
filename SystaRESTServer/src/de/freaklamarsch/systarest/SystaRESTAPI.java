@@ -25,10 +25,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
-import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -56,13 +54,13 @@ import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.Response.ResponseBuilder;
 import jakarta.ws.rs.core.StreamingOutput;
 
 /**
- * class for creating a Jersey resource that offers a REST API for a Paradigma
- * SystaComfort II For running this class a {@link SystaRESTServer} is required
- *
+ /**
+ * A REST API for interacting with the Paradigma SystaComfort system.
+ * This API provides endpoints for retrieving system status, monitoring raw data, and managing logging.
+ * This class is intended to be run by a {@link SystaRESTServer}
  */
 @Path("{systarest : (?i)systarest}")
 public class SystaRESTAPI {
@@ -95,6 +93,7 @@ public class SystaRESTAPI {
 	 * also be accesses by calling
 	 * {@code http://<ip>:<port>/application.wadl?detail=true}
 	 */
+	@SuppressWarnings("unused")
 	private void printAPI() {
 		Resource resource = Resource.from(this.getClass());
 		System.out.println("Path is " + resource.getPath());
@@ -116,13 +115,13 @@ public class SystaRESTAPI {
 	@POST
 	@Path("{start : (?i)start}")
 	public void start(@Context ResourceConfig config) {
-		System.out.println("[ParadigmaRESTAPI] start: called");
+		System.out.println("SystaRESTAPI] start: called");
 		if (t == null || !t.isAlive()) {
 			// in Java you can start a thread only once, so we need a new one
 			t = new Thread(fsw);
-			System.out.println("[ParadigmaRESTAPI] start: starting FakeSystaWeb");
+			System.out.println("[SystaRESTAPI] start: starting FakeSystaWeb");
 			String confInetAddress = (String) config.getProperty(PROP_PARADIGMA_IP);
-			System.out.println("[ParadigmaRESTAPI] start: Configuring FakeSystaWeb to listen on IP " + confInetAddress);
+			System.out.println("[SystaRESTAPI] start: Configuring FakeSystaWeb to listen on IP " + confInetAddress);
 			if (confInetAddress != null) {
 				fsw.setInetAddress(confInetAddress);
 			}
@@ -131,9 +130,9 @@ public class SystaRESTAPI {
 			} catch (Exception e) {
 				e.printStackTrace();
 			}
-			System.out.println("[ParadigmaRESTAPI] start: running");
+			System.out.println("[SystaRESTAPI] start: running");
 		} else {
-			System.out.println("[ParadigmaRESTAPI] start: FakeSystaWeb is already running, ignoring request");
+			System.out.println("[SystaRESTAPI] start: FakeSystaWeb is already running, ignoring request");
 		}
 	}
 
@@ -143,9 +142,9 @@ public class SystaRESTAPI {
 	@POST
 	@Path("{stop : (?i)stop}")
 	public void stop() {
-		System.out.println("[ParadigmaRESTAPI] stop: called");
+		System.out.println("[SystaRESTAPI] stop: called");
 		fsw.stop();
-		System.out.println("[ParadigmaRESTAPI] stop: stopped");
+		System.out.println("[SystaRESTAPI] stop: stopped");
 	}
 
 	/**
@@ -224,8 +223,6 @@ public class SystaRESTAPI {
 	@Path("{rawdata : (?i)rawdata}")
 	@Produces(MediaType.APPLICATION_JSON)
 	public JsonObject getRawData() {
-		// System.out.println("[ParadigmaRESTAPI] getRawData: called");
-		// System.out.println("[ParadigmaRESTAPI] getRawData: fsw.getData()");
 		Integer[] rawData = fsw.getData();
 		if (rawData == null) {
 			return jsonFactory.createObjectBuilder().build();
@@ -236,21 +233,13 @@ public class SystaRESTAPI {
 		// FakeSystaWeb between the calls
 		long timestamp = fsw.getTimestamp();
 		String timestampString = fsw.getTimestampString();
-		// System.out.println("[ParadigmaRESTAPI] getRawData: got
-		// rawData["+rawData.length+"] from fsw");
-		// System.out.println("[ParadigmaRESTAPI] getRawData: create rawData JSON
-		// array");
 		JsonArrayBuilder jab = jsonFactory.createArrayBuilder();
-		// System.out.println("[ParadigmaRESTAPI] getRawData: populate rawData JSON
-		// array");
-		for (int i : rawData) {
-			jab.add(i);
+		for (Integer i : rawData) {
+			// rawData is initialized to all 0, so we do not have to check for null here
+			jab.add(i.intValue());
 		}
-		// System.out.println("[ParadigmaRESTAPI] getRawData: building JSON object");
 		JsonObject jo = jsonFactory.createObjectBuilder().add("timestamp", timestamp)
 				.add("timestampString", timestampString).add("rawData", jab.build()).build();
-		// System.out.println("[ParadigmaRESTAPI] getRawData: finished building JSON
-		// object");
 		return jo;
 	}
 
@@ -415,10 +404,8 @@ public class SystaRESTAPI {
 	@Produces("application/zip")
 	public Response getAllLogs() {
 		File file = fsw.getAllLogs();
-		System.out.println("[SystaRESTServer] return zip file: "+file);
-		return Response
-				.ok(file)
-				.header("Content-Disposition", "attachment; filename=" + file.getName())
+		System.out.println("[SystaRESTServer] return zip file: " + file);
+		return Response.ok(file).header("Content-Disposition", "attachment; filename=" + file.getName())
 				.entity(new StreamingOutput() {
 					@Override
 					public void write(final OutputStream output) throws IOException, WebApplicationException {
@@ -428,8 +415,7 @@ public class SystaRESTAPI {
 							file.delete();
 						}
 					}
-				})
-				.build();
+				}).build();
 	}
 
 	@DELETE
@@ -469,7 +455,8 @@ public class SystaRESTAPI {
 	}
 
 	/**
-	 * Returns the a .html file for showing a dashboard for the values of the last 24h in the browser.
+	 * Returns the a .html file for showing a dashboard for the values of the last
+	 * 24h in the browser.
 	 * 
 	 * @return the InputStream of the file, or null, if something went wrong in the
 	 *         file handling
@@ -489,21 +476,6 @@ public class SystaRESTAPI {
 			e.printStackTrace();
 			return null;
 		}
-	}
-
-	/**
-	 * WARNING: This function is not yet finished
-	 * set the operation mode of the Systa Comfort
-	 * 
-	 * @param mode the intended operation mode 0 = Auto Prog. 1 1 = Auto Prog. 2 2 =
-	 *             Auto Prog. 3 3 = Continuous Normal 4 = Continuous Comfort 5 =
-	 *             Continuous Lowering 6 = Summer 7 = Off 8 = Party 14= Test or
-	 *             chimney sweep
-	 */
-	@PUT
-	@Path("{operationmode : (?i)operationmode}")
-	public void operationmode(@DefaultValue("0") @QueryParam("mode") int mode) {
-		fsw.setOperationMode(mode);
 	}
 
 }

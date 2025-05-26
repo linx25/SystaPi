@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
@@ -32,25 +33,28 @@ import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
+import java.net.DatagramSocket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Enumeration;
+import java.util.Scanner;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 import org.junit.jupiter.api.Test;
 
+import de.freaklamarsch.systarest.CircularBuffer;
 import de.freaklamarsch.systarest.DataLogger;
+import de.freaklamarsch.systarest.DataLogger.DataLoggerStatus;
 import de.freaklamarsch.systarest.FakeSystaWeb;
+import de.freaklamarsch.systarest.FakeSystaWeb.FakeSystaWebStatus;
 import de.freaklamarsch.systarest.SystaStatus;
 
 class FakeSystaWebTest {
-	ByteBuffer data = ByteBuffer.allocate(1048).order(ByteOrder.LITTLE_ENDIAN);
+	ByteBuffer[] data = null;
 	private static final String logDir = "./SystaLogs";
 	private FilenameFilter logfileFilter;
 	private Field logFileFilterStringField;
@@ -60,10 +64,12 @@ class FakeSystaWebTest {
 	private Field readIndex;
 	private Field writeIndex;
 	private Field timestamp;
+	private Field socketField;
+	private DatagramSocket socket;
 	private Field intData;
-	private Method logRawAddData;
-	private Method logIntAddData;
 	private DataLogger<Integer> logInt;
+	private Field logIntDataBufferField;
+	private CircularBuffer<Integer> logIntDataBuffer;
 	private DataLogger<Byte> logRaw;
 
 	FakeSystaWebTest() throws NoSuchFieldException, SecurityException, IllegalArgumentException, IllegalAccessException,
@@ -90,16 +96,23 @@ class FakeSystaWebTest {
 			writeIndex.setAccessible(true);
 			timestamp = FakeSystaWeb.class.getDeclaredField("timestamp");
 			timestamp.setAccessible(true);
+			socket = new DatagramSocket();
+			socketField = FakeSystaWeb.class.getDeclaredField("socket");
+			socketField.setAccessible(true);
+			socketField.set(fsw, socket);
 			intData = FakeSystaWeb.class.getDeclaredField("intData");
 			intData.setAccessible(true);
 			Field logRawField = FakeSystaWeb.class.getDeclaredField("logRaw");
 			logRawField.setAccessible(true);
 			logRaw = (DataLogger<Byte>) logRawField.get(fsw);
-			logRawAddData = logRaw.getClass().getMethod("addData", Object[].class, long.class);
-			Field logIntField = FakeSystaWeb.class.getDeclaredField("logInt");
+			logRaw.getClass().getMethod("addData", Object[].class, long.class);
+			Field logIntField = fsw.getClass().getDeclaredField("logInt");
 			logIntField.setAccessible(true);
 			logInt = (DataLogger<Integer>) logIntField.get(fsw);
-			logIntAddData = logInt.getClass().getDeclaredMethod("addData", Object[].class, long.class);
+			logIntDataBufferField = logInt.getClass().getDeclaredField("dataBuffer");
+			logIntDataBufferField.setAccessible(true);
+			logIntDataBuffer = (CircularBuffer<Integer>) logIntDataBufferField.get(logInt);
+			logInt.getClass().getDeclaredMethod("addData", Object[].class, long.class);
 			logFileFilterStringField = FakeSystaWeb.class.getDeclaredField("logFileFilterString");
 			logFileFilterStringField.setAccessible(true);
 			logFileFilterString = (String) logFileFilterStringField.get(fsw);
@@ -125,23 +138,23 @@ class FakeSystaWebTest {
 	}
 
 	@Test
-	void testProcessType1() {
+	void testProcessDataType1() {
 		initialize();
 		// processType1 is only called from run(), so we have to set some
 		// variables first which usually get set by run()
 		assertTrue(updateWriteIndexAndTimestamp(fsw));
 		// now we can invoke processType1
-		Method processType1 = null;
+		Method processDataType1 = null;
 		try {
-			processType1 = prepareInvokeProcessType1(fsw);
-			processType1.invoke(fsw, data);
+			processDataType1 = prepareInvokeMethod("processDataType1", ByteBuffer.class);
+			processDataType1.invoke(fsw, data[0]);
 		} catch (Exception e) {
 			e.printStackTrace();
-			fail("Exception thrown when trying to obtain method processType1");
+			fail("Exception thrown when trying to obtain method processDataType1");
 		}
 		SystaStatus status = fsw.getParadigmaStatus();
-		data.position(0);
-		assertEquals(1048, data.remaining());
+		data[0].position(0);
+		assertEquals(1048, data[0].remaining());
 		assertEquals(25.3, status.outsideTemp);
 		assertEquals(30.9, status.circuit1FlowTemp);
 		assertEquals(31.2, status.circuit1ReturnTemp);
@@ -254,9 +267,56 @@ class FakeSystaWebTest {
 	}
 
 	@Test
+	void testProcessDatagram() {
+		initialize();
+		// testProcessDatagram is only called from run(), so we have to set some
+		// variables first which usually get set by run()
+		assertTrue(updateWriteIndexAndTimestamp(fsw));
+		// now we can invoke processType1
+		Method processDatagram = null;
+		try {
+			processDatagram = prepareInvokeMethod("processDatagram", ByteBuffer.class);
+			processDatagram.invoke(fsw, data[1]); // type 0x00, not logged
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[2]);
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[3]);
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[4]);
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[5]); // type 0x00, not logged
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[6]);
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[7]);
+			Thread.sleep(5);
+			processDatagram.invoke(fsw, data[8]);
+		} catch (Exception e) {
+			e.printStackTrace();
+			fail("Exception thrown when trying to obtain method testProcessDatagram");
+		}
+		FakeSystaWebStatus fswStatus = fsw.getStatus();
+		DataLoggerStatus logIntStatus = logInt.getStatus();
+		// data[0].position(0);
+		assertEquals(6, logIntDataBuffer.size());
+		assertFalse(fswStatus.running);// fsw was not started for this test
+		assertTrue(fswStatus.connected);// connected is calculated from processed packets
+		assertEquals(logIntStatus.lastTimestamp, fswStatus.lastTimestamp);
+		assertEquals(0, fswStatus.dataPacketsReceived);// we did not use the receive method
+		assertEquals(6, logIntStatus.bufferedEntries);
+	}
+
+	@Test
 	void testGetAllLogs() {
 		// make sure initialization is successfull
 		assertTrue(initialize());
+		int sendXPackets = 151;
+		int maxDataIdx = 8;
+		int numOfEntries = 10;
+		// for 151 logged packets, with 10 entries per file,
+		// we should see 26 files, 15 raw and 11 data, because not all packets are
+		// logged to data
+		int expectedNumOfFiles = 26;
 		File logs = new File(logDir);
 		if (!logs.exists()) {
 			logs.mkdirs();
@@ -267,27 +327,14 @@ class FakeSystaWebTest {
 		}
 		// add data packets to the logs
 		try {
-			Method processType1 = prepareInvokeProcessType1(fsw);
+			Method processDatagram = prepareInvokeMethod("processDatagram", ByteBuffer.class);
 			// enable logging
-			fsw.logRawData("test", "<>", 10);
-			// prepare data
-			byte[] bytes = data.array();
-			Byte[] Data = new Byte[bytes.length];
-			int j = 0;
-			// Associating Byte array values with bytes. (byte[] to Byte[])
-			for (byte b : bytes) {
-				Data[j++] = b; // Autoboxing.
-			}
+			fsw.logRawData("test", "<>", numOfEntries);
 			// "send" 151 packets
-			for (int i = 0; i < 151; i++) {
-				assertTrue(updateWriteIndexAndTimestamp(fsw));
-				logRawAddData.invoke(logRaw, Data, ((long[]) timestamp.get(fsw))[writeIndex.getInt(fsw)]);
-				if ((i % 3) == 0) {
-					// mimic the behavior that each 3rd packet is a data packet
-					processType1.invoke(fsw, data);
-					logIntAddData.invoke(logInt, ((Integer[][]) intData.get(fsw))[readIndex.getInt(fsw)],
-							((long[]) timestamp.get(fsw))[readIndex.getInt(fsw)]);
-				}
+			for (int i = 1; i <= sendXPackets; i++) {
+				data[(i) % maxDataIdx].position(0);
+				processDatagram.invoke(fsw, data[(i) % maxDataIdx]);
+				Thread.sleep(2);
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -295,17 +342,16 @@ class FakeSystaWebTest {
 		}
 		// get the files created by the DataLoggers
 		File[] files = logs.listFiles(logfileFilter);
-		// for 151 logged pakets, we should see 10 files, 5 raw and 5 data
-		assertEquals(10, files.length);
+		assertEquals(expectedNumOfFiles, files.length);
 		// validate the content of the zip
 		File zf = fsw.getAllLogs();
-		
+
 		ZipFile zipFile = null;
 		try {
 			// open a zip file for reading
 			zipFile = new ZipFile(zf);
-			// check if we have 10 entries as expected
-			assertEquals(10, zipFile.size());
+			// check if we have expectedNumOfFiles entries
+			assertEquals(expectedNumOfFiles, zipFile.size());
 			// get an enumeration of the ZIP file entries
 			Enumeration<? extends ZipEntry> e = zipFile.entries();
 			while (e.hasMoreElements()) {
@@ -331,7 +377,7 @@ class FakeSystaWebTest {
 		}
 		// now we can use this test to also test deleteAllLogs
 		// first add a file that should not be deleted
-		File newFile = new File(logDir + File.separator + "dont-delete-data.txt");
+		File newFile = new File(logDir + File.separator + "dont-delete-data[0].txt");
 		try {
 			newFile.createNewFile();
 		} catch (IOException e) {
@@ -349,23 +395,51 @@ class FakeSystaWebTest {
 	}
 
 	/**
-	 * @param fsw
-	 * @return
+	 * @param methodName the name of the method, that should be retrieved from
+	 *                   FakeSystaWeb
+	 * @return Method processDatagram from fsw
+	 * @throws NoSuchFieldException
+	 * @throws SecurityException
+	 * @throws IllegalArgumentException
+	 * @throws IllegalAccessException
+	 * @throws NoSuchMethodException
+	 * 
+	 *                                  private Method prepareInvokeMethod(String
+	 *                                  methodName) throws NoSuchFieldException,
+	 *                                  SecurityException, IllegalArgumentException,
+	 *                                  IllegalAccessException,
+	 *                                  NoSuchMethodException { //Method
+	 *                                  processDataType1 =
+	 *                                  FakeSystaWeb.class.getDeclaredMethod("processDataType1",
+	 *                                  ByteBuffer.class); Method method =
+	 *                                  FakeSystaWeb.class.getDeclaredMethod(methodName,
+	 *                                  ByteBuffer.class);
+	 *                                  method.setAccessible(true); return method; }
+	 */
+
+	/**
+	 * @param methodName the name of the method, that should be retrieved from
+	 *                   FakeSystaWeb
+	 * @return Method processDatagram from fsw
 	 * @throws NoSuchFieldException
 	 * @throws SecurityException
 	 * @throws IllegalArgumentException
 	 * @throws IllegalAccessException
 	 * @throws NoSuchMethodException
 	 */
-	private Method prepareInvokeProcessType1(FakeSystaWeb fsw) throws NoSuchFieldException, SecurityException,
-			IllegalArgumentException, IllegalAccessException, NoSuchMethodException {
-		Method processType1 = FakeSystaWeb.class.getDeclaredMethod("processType1", ByteBuffer.class);
-		processType1.setAccessible(true);
-		return processType1;
+	private Method prepareInvokeMethod(String methodName, Class<?>... parameters) throws NoSuchFieldException,
+			SecurityException, IllegalArgumentException, IllegalAccessException, NoSuchMethodException {
+		// Method processDataType1 =
+		// FakeSystaWeb.class.getDeclaredMethod("processDataType1", ByteBuffer.class);
+		Method method = FakeSystaWeb.class.getDeclaredMethod(methodName, parameters);
+		method.setAccessible(true);
+		return method;
 	}
 
 	/**
-	 * update the writeIndex and timestamp as it is done inside the FakeSystaWeb run method
+	 * update the writeIndex and timestamp as it is done inside the FakeSystaWeb run
+	 * method
+	 * 
 	 * @param fsw
 	 * @return true if everything worked fine, false if an error occurred
 	 */
@@ -446,1041 +520,54 @@ class FakeSystaWebTest {
 			LOG_PATH.setAccessible(true);
 			LOG_PATH.set(DataLogger.class, newDir);
 		} catch (Exception e) {
-			// TODO Auto-generated catch block
 			e.printStackTrace();
 		}
 	}
 
 	private void initializeData() {
-		// load a captured packet
-		data.position(0);
-		data.put((byte) 0);
-		data.put((byte) -105);
-		data.put((byte) -66);
-		data.put((byte) 44);
-		data.put((byte) 62);
-		data.put((byte) 108);
-		data.put((byte) -4);
-		data.put((byte) 6);
-		data.put((byte) 9);
-		data.put((byte) 9);
-		data.put((byte) 12);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) -36);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 53);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 56);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 25);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -4);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 64);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -44);
-		data.put((byte) -2);
-		data.put((byte) -1);
-		data.put((byte) -1);
-		data.put((byte) -44);
-		data.put((byte) -2);
-		data.put((byte) -1);
-		data.put((byte) -1);
-		data.put((byte) -44);
-		data.put((byte) -2);
-		data.put((byte) -1);
-		data.put((byte) -1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 31);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 31);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 112);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -46);
-		data.put((byte) -2);
-		data.put((byte) -1);
-		data.put((byte) -1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 113);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -46);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -16);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -76);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 112);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 113);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 84);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 4);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 88);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -106);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -106);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 20);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 5);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -12);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 4);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 35);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -36);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -106);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 35);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 36);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 94);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 13);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -68);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 20);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 120);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 5);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -12);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 4);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 35);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -36);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -106);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 35);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 36);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 94);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 13);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -68);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 20);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 120);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 5);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -12);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 4);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 35);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 38);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 88);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -118);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 10);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 82);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 10);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 5);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -6);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 25);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 3);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 15);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -67);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 27);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 45);
-		data.put((byte) 15);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 48);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 110);
-		data.put((byte) 9);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 22);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 44);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -118);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -6);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 24);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -68);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 100);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 2);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -56);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 20);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 50);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 30);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 8);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) -1);
-		data.put((byte) -1);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 7);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 6);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
-		data.put((byte) 0);
+		data = new ByteBuffer[9];
+		for (int i = 0; i < data.length; i++) {
+			data[i] = ByteBuffer.allocate(1048).order(ByteOrder.LITTLE_ENDIAN);
+		}
+		// load a captured packets for tests
+		String testDir = this.getClass().getResource(".").getPath();
+		readHexTextIntoByteBuffer(data[0], testDir + "data00_09_00.txt");
+		readHexTextIntoByteBuffer(data[1], testDir + "data01_09_00.txt");
+		readHexTextIntoByteBuffer(data[2], testDir + "data02_09_01.txt");
+		readHexTextIntoByteBuffer(data[3], testDir + "data03_09_02.txt");
+		readHexTextIntoByteBuffer(data[4], testDir + "data04_09_03.txt");
+		readHexTextIntoByteBuffer(data[5], testDir + "data05_09_00.txt");
+		readHexTextIntoByteBuffer(data[6], testDir + "data06_09_01.txt");
+		readHexTextIntoByteBuffer(data[7], testDir + "data07_09_02.txt");
+		readHexTextIntoByteBuffer(data[8], testDir + "data08_09_03.txt");
+	}
+
+	/**
+	 * loads a hexText file into a ByteBuffer. A hexText file is a file, that has
+	 * the Hex Stream of a captured packet as a single line. The size of the
+	 * ByteBuffer has to match the Hex Stream in the file. No checks are done.
+	 * 
+	 * @param byteBuffer  the buffer in which the bytes from the hexText file should
+	 *                    be stored
+	 * @param hexTextFile path to the hexText file
+	 */
+	private void readHexTextIntoByteBuffer(ByteBuffer byteBuffer, String hexTextFile) {
+		try (Scanner scanner = new Scanner(new File(hexTextFile))) {
+			scanner.findAll("[0-9A-Fa-f]{2}").mapToInt(m -> Integer.parseInt(m.group(), 16)).forEachOrdered(i -> {
+				if (byteBuffer.hasRemaining())
+					byteBuffer.put((byte) i);
+			});
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
+			return;
+		}
+		System.out.print("Test Data loaded: ");
+		for (int i = 0; i < byteBuffer.limit(); i++) {
+			System.out.format("%02x", byteBuffer.get(i));
+		}
+		System.out.println();
+		// reset the buffer position to 0
+		byteBuffer.position(0);
 	}
 
 }

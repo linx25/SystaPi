@@ -23,7 +23,8 @@
   <title>SystaPi Dashboard</title>
   <style>
     /* Color palette and fonts used */
-    :root {
+    @import url(http://fonts.googleapis.com/css?family=Roboto:100,100italic,300,300italic,400,400italic,500,500italic,700,700italic);
+     :root {
       --main-grey: rgba(151, 151, 151, 1.0);
       /*#979797*/
       --main-grey-50: rgba(151, 151, 151, 0.5);
@@ -568,7 +569,7 @@
       }
 
       fetchData() {
-        fetch("http://systapi:1337/SystaREST/status")
+        fetch("http://"+location.host+"/SystaREST/status")
           .then(response => {
             if (response.ok) {
               return response.json();
@@ -646,7 +647,7 @@
       }
 
       findSystaComfort() {
-        fetch("http://systapi:1337/SystaREST/findsystacomfort")
+        fetch("http://"+location.host+"/SystaREST/findsystacomfort")
           .then(response => {
             if (response.ok) {
               return response.json();
@@ -672,7 +673,7 @@
       }
 
       fetchServiceStatus() {
-        fetch("http://systapi:1337/SystaREST/servicestatus")
+        fetch("http://"+location.host+"/SystaREST/servicestatus")
           .then(response => {
             if (response.ok) {
               return response.json();
@@ -933,7 +934,7 @@
               buttonLabels: [["log", "stop"],["del"],["zip"]],
               state: this.state.loggingData,
               onComplete: this.fetchServiceStatus.bind(this),
-              urls: [["http://systapi:1337/SystaREST/enablelogging", "http://systapi:1337/SystaREST/disablelogging"], ["http://systapi:1337/SystaREST/deletealllogs"], ["http://systapi:1337/SystaREST/getalllogs"]],
+              urls: [["http://"+location.host+"/SystaREST/enablelogging", "http://"+location.host+"/SystaREST/disablelogging"], ["http://"+location.host+"/SystaREST/deletealllogs"], ["http://"+location.host+"/SystaREST/getalllogs"]],
               methods: [["PUT", "PUT"], ["DELETE"], ["URL"]],
               backgroundColor: colorSecondaryBg,
             }, null),
